@@ -1,115 +1,120 @@
-import os
 import csv
+import os
+import re
 
-OUTPUT_SQL = "db_init.sql"
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+OUT_FILE = os.path.join(BASE_DIR, "db_init.sql")
 
-def escape_sql(value):
-    return value.replace("'", "''")
 
-def generate_sql():
-    sql_lines = []
-    
-    # Сброс старых таблиц
-    tables = ['movies', 'ratings', 'tags', 'users']
-    for table in tables:
-        sql_lines.append(f"DROP TABLE IF EXISTS {table};")
-    sql_lines.append("")
+def path(name):
+    return os.path.join(BASE_DIR, name)
 
-    # 1. Схема movies
-    sql_lines.append("""CREATE TABLE movies (
-    id INTEGER PRIMARY KEY,
-    title TEXT,
-    year INTEGER,
-    genres TEXT
-);""")
 
-    # 2. Схема ratings (id убран из списка вставляемых полей, так как в CSV всего 4 колонки)
-    sql_lines.append("""CREATE TABLE ratings (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id INTEGER,
-    movie_id INTEGER,
-    rating REAL,
-    timestamp INTEGER
-);""")
+def q(value):
+    """Строка -> SQL-литерал (экранируем одинарные кавычки). None -> NULL."""
+    if value is None or value == "":
+        return "NULL"
+    return "'" + str(value).replace("'", "''") + "'"
 
-    # 3. Схема tags (id убран из списка вставляемых полей, так как в CSV всего 4 колонки)
-    sql_lines.append("""CREATE TABLE tags (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id INTEGER,
-    movie_id INTEGER,
-    tag TEXT,
-    timestamp INTEGER
-);""")
 
-    # 4. Схема users
-    sql_lines.append("""CREATE TABLE users (
-    id INTEGER PRIMARY KEY,
-    name TEXT,
-    email TEXT,
-    gender TEXT,
-    register_date TEXT,
-    occupation TEXT
-);""")
-    sql_lines.append("\n" + "-"*40 + "\n")
+def num(value):
+    return "NULL" if value is None or value == "" else str(value)
 
-    def file_to_inserts(filename, table_name, columns, delimiter=','):
-        if not os.path.exists(filename):
-            print(f"Ошибка: Файл {filename} не найден.")
-            return
-        
-        with open(filename, mode='r', encoding='utf-8') as f:
-            # Автоматически определяем разделитель для текстовых файлов, если передан дефолтный
-            content_preview = f.read(2048)
-            f.seek(0)
-            
-            current_delimiter = delimiter
-            if filename.endswith('.txt'):
-                if '\t' in content_preview:
-                    current_delimiter = '\t'
-                elif ';' in content_preview:
-                    current_delimiter = ';'
-                elif ',' in content_preview:
-                    current_delimiter = ','
 
-            reader = csv.reader(f, delimiter=current_delimiter)
-            try:
-                next(reader)  # Пропуск заголовка
-            except StopIteration:
-                return
-            
-            for row in reader:
-                if not row or len(row) == 0:
-                    continue
-                
-                # Защита от пустых или сломанных строк
-                if len(row) != len(columns):
-                    continue
-                
-                escaped_row = []
-                for x in row:
-                    x = x.strip()
-                    if x.isdigit():
-                        escaped_row.append(x)
-                    else:
-                        try:
-                            float(x)
-                            escaped_row.append(x)
-                        except ValueError:
-                            escaped_row.append(f"'{escape_sql(x)}'")
-                
-                col_str = ", ".join(columns)
-                val_str = ", ".join(escaped_row)
-                sql_lines.append(f"INSERT INTO {table_name} ({col_str}) VALUES ({val_str});")
+def main():
+    lines = []
+    w = lines.append
 
-    # Передаем только те колонки, которые ФИЗИЧЕСКИ есть в файлах данных
-    file_to_inserts("movies.csv", "movies", ["id", "title", "year", "genres"], delimiter=',')
-    file_to_inserts("ratings.csv", "ratings", ["user_id", "movie_id", "rating", "timestamp"], delimiter=',')
-    file_to_inserts("tags.csv", "tags", ["user_id", "movie_id", "tag", "timestamp"], delimiter=',')
-    file_to_inserts("users.txt", "users", ["id", "name", "email", "gender", "register_date", "occupation"])
+    # ---------- 1. Удаление и создание таблиц ----------
+    w("PRAGMA foreign_keys = OFF;")
+    w("DROP TABLE IF EXISTS movies;")
+    w("DROP TABLE IF EXISTS ratings;")
+    w("DROP TABLE IF EXISTS tags;")
+    w("DROP TABLE IF EXISTS users;")
+    w("")
+    w("CREATE TABLE movies (")
+    w("    id INTEGER PRIMARY KEY,")
+    w("    title VARCHAR(160) NOT NULL,")
+    w("    year INTEGER,")
+    w("    genres VARCHAR(80)")
+    w(");")
+    w("CREATE TABLE ratings (")
+    w("    id INTEGER PRIMARY KEY AUTOINCREMENT,")
+    w("    user_id INTEGER NOT NULL,")
+    w("    movie_id INTEGER NOT NULL,")
+    w("    rating REAL NOT NULL,")
+    w("    timestamp INTEGER NOT NULL")
+    w(");")
+    w("CREATE TABLE tags (")
+    w("    id INTEGER PRIMARY KEY AUTOINCREMENT,")
+    w("    user_id INTEGER NOT NULL,")
+    w("    movie_id INTEGER NOT NULL,")
+    w("    tag VARCHAR(100) NOT NULL,")
+    w("    timestamp INTEGER NOT NULL")
+    w(");")
+    w("CREATE TABLE users (")
+    w("    id INTEGER PRIMARY KEY,")
+    w("    name VARCHAR(50) NOT NULL,")
+    w("    email VARCHAR(50),")
+    w("    gender VARCHAR(10),")
+    w("    register_date TEXT,")
+    w("    occupation VARCHAR(20)")
+    w(");")
+    w("")
+    w("BEGIN TRANSACTION;")
 
-    with open(OUTPUT_SQL, "w", encoding="utf-8") as f:
-        f.write("\n".join(sql_lines))
-    print(f"Скрипт {OUTPUT_SQL} успешно сгенерирован!")
+    # ---------- 2. movies ----------
+    with open(path("movies.csv"), encoding="utf-8", newline="") as f:
+        reader = csv.reader(f)
+        next(reader)  # заголовок
+        for row in reader:
+            if not row:
+                continue
+            movie_id, title, genres = row[0], row[1].strip(), row[2]
+            m = re.search(r"\((\d{4})\)\s*$", title)
+            year = m.group(1) if m else None
+            if m:
+                title = title[:m.start()].strip()
+            w("INSERT INTO movies (id, title, year, genres) VALUES (%s, %s, %s, %s);"
+              % (movie_id, q(title), num(year), q(genres)))
+
+    # ---------- 3. ratings ----------
+    with open(path("ratings.csv"), encoding="utf-8", newline="") as f:
+        reader = csv.reader(f)
+        next(reader)
+        for row in reader:
+            if not row:
+                continue
+            w("INSERT INTO ratings (user_id, movie_id, rating, timestamp) VALUES (%s, %s, %s, %s);"
+              % (row[0], row[1], row[2], row[3]))
+
+    # ---------- 4. tags ----------
+    with open(path("tags.csv"), encoding="utf-8", newline="") as f:
+        reader = csv.reader(f)
+        next(reader)
+        for row in reader:
+            if not row:
+                continue
+            w("INSERT INTO tags (user_id, movie_id, tag, timestamp) VALUES (%s, %s, %s, %s);"
+              % (row[0], row[1], q(row[2]), row[3]))
+
+    # ---------- 5. users (разделитель |, без заголовка) ----------
+    with open(path("users.txt"), encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            p = line.split("|")
+            w("INSERT INTO users (id, name, email, gender, register_date, occupation) "
+              "VALUES (%s, %s, %s, %s, %s, %s);"
+              % (p[0], q(p[1]), q(p[2]), q(p[3]), q(p[4]), q(p[5])))
+
+    w("COMMIT;")
+
+    with open(OUT_FILE, "w", encoding="utf-8", newline="\n") as out:
+        out.write("\n".join(lines) + "\n")
+    print("Создан файл", OUT_FILE)
+
 
 if __name__ == "__main__":
-    generate_sql()
+    main()
