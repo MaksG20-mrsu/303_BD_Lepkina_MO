@@ -74,6 +74,45 @@ CREATE TABLE appointments (
         ON DELETE RESTRICT ON UPDATE CASCADE
 );
 
+-- Запрет пересекающихся записей к одному мастеру (отменённые не учитываются)
+CREATE TRIGGER trg_appointments_no_overlap_insert
+BEFORE INSERT ON appointments
+WHEN NEW.status <> 'cancelled'
+BEGIN
+    SELECT RAISE(ABORT, 'Мастер занят в это время')
+    WHERE EXISTS (
+        SELECT 1 FROM appointments a
+        WHERE a.master_id = NEW.master_id
+          AND a.status <> 'cancelled'
+          AND a.start_time < NEW.end_time
+          AND a.end_time   > NEW.start_time
+    );
+END;
+
+CREATE TRIGGER trg_appointments_no_overlap_update
+BEFORE UPDATE ON appointments
+WHEN NEW.status <> 'cancelled'
+BEGIN
+    SELECT RAISE(ABORT, 'Мастер занят в это время')
+    WHERE EXISTS (
+        SELECT 1 FROM appointments a
+        WHERE a.master_id = NEW.master_id
+          AND a.id <> NEW.id
+          AND a.status <> 'cancelled'
+          AND a.start_time < NEW.end_time
+          AND a.end_time   > NEW.start_time
+    );
+END;
+
+-- Нельзя записать к мастеру после даты его увольнения
+CREATE TRIGGER trg_appointments_master_not_dismissed
+BEFORE INSERT ON appointments
+WHEN (SELECT dismissal_date FROM masters WHERE id = NEW.master_id) IS NOT NULL
+ AND date(NEW.start_time) > (SELECT dismissal_date FROM masters WHERE id = NEW.master_id)
+BEGIN
+    SELECT RAISE(ABORT, 'Мастер уже уволен');
+END;
+
 -- Выбранные услуги в записи (многие ко многим)
 CREATE TABLE appointment_services (
     appointment_id  INTEGER NOT NULL,
